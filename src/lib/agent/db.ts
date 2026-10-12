@@ -1,4 +1,7 @@
-import { Pool } from "pg";
+import { Pool, types } from "pg";
+
+// DATE-Spalten als "JJJJ-MM-TT" zurückgeben statt als JS-Date (keine Zeitzonen-Verschiebung).
+types.setTypeParser(types.builtins.DATE, (v) => v);
 
 // Eine Verbindung pro Serverless-Instanz; als Benutzer claude_agent (kein DELETE).
 let pool: Pool | null = null;
