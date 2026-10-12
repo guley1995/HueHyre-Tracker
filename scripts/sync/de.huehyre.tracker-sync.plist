@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  HueHYRE Tracker – Sync auf dem Mac.
+  Holt den nächtlichen Export nach "Tracker-Export" und arbeitet "Tracker-Import" ab.
+
+  Einrichten (Pfade unten anpassen: PROJEKTPFAD und ggf. Node-Pfad aus `which node`):
+    cp scripts/sync/de.huehyre.tracker-sync.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/de.huehyre.tracker-sync.plist
+  Sofort testen:
+    launchctl start de.huehyre.tracker-sync && tail -f /tmp/huehyre-sync.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>de.huehyre.tracker-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>PROJEKTPFAD/node_modules/tsx/dist/cli.mjs</string>
+    <string>PROJEKTPFAD/scripts/sync/sync.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>PROJEKTPFAD</string>
+  <!-- Täglich 6:30 (Export entsteht um 2:00) und zusätzlich alle 30 Minuten für den Import-Ordner. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>6</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/huehyre-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/huehyre-sync.log</string>
+</dict>
+</plist>
