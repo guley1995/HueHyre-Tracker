@@ -47,6 +47,8 @@ beforeAll(async () => {
       ["K-2026-38", "K-2026-38 (Klarname offen)", "", "", "", "", "Elektriker", "", "Vermarktet", "", "", "", "", ""],
       ["", "Kein Name (Aichach)", "", "", "", "", "Lagerist", "", "Nur gescreent", "", "Indeed", "", "", ""],
       ["", "Gieselmann (Kfz) – Maron-Pool", "", "", "", "", "Kfz", "", "Maron-Pool (Partner)", "", "", "", "", ""],
+      ["", "Neo Neu", "neo@x.de", "", "", "", "", "", "Aktiv – neu", "", "", "", "", ""],
+      ["", "Pia Pool", "pia@x.de", "", "", "", "", "", "Pool – Wiedervorlage", "", "", "", "", ""],
     ],
     "K-Nummern": [
       ["K-Nr", "Name"],
@@ -78,6 +80,8 @@ beforeAll(async () => {
       ["K-Nr", "Kandidat", "Firma", "Stelle", "Vorgestellt am"],
       ["K-2026-047", "Petra Wittler", "Kirstein", "Buchhalter/in", "20.09.2026"],
       ["K-03", "Tahsin E.", "SURTECO", "Lager", ""],
+      ["", "Wittler", "Rosenberger-OSI", "Finanzbuchhalter", "13.10.2026"],
+      ["", "Ina", "Kirstein (Kunde)", "Teamleiter Lager", ""],
     ],
     "Tabu & Regeln": [
       ["Name", "Art", "Grund", "Gilt für"],
@@ -178,7 +182,7 @@ describe("Importplan", () => {
     // Nur im K-Nummern-Blatt → Pool + Warnung
     expect(p.candidates.find((c) => c.k_nr === "K-2026-050")!.stage).toBe("pool");
 
-    expect(p.presentations.map((x) => `${x.company}@${x.sent_date}`).sort()).toEqual(["Craiss@2026-10-07", "Humbaur@2026-09-12", "Kirstein@2026-09-20", "Mader@2026-10-09", "Sirl@2026-10-07"]);
+    expect(p.presentations.map((x) => `${x.company}@${x.sent_date}`).sort()).toEqual(["Craiss@2026-10-07", "Humbaur@2026-09-12", "Kirstein@2026-09-20", "Mader@2026-10-09", "Rosenberger-OSI@2026-10-13", "Sirl@2026-10-07"]);
     expect(p.issues.some((i) => i.message.includes("Kögel") && i.message.includes("ohne Datum"))).toBe(true);
     expect(p.jobs.find((j) => j.title === "Lager")!.source_type).toBe("Vorschlag");
     expect(p.jobs.find((j) => j.title.startsWith("Elektroniker"))!.last_checked_date).toBe("2026-10-05");
@@ -216,6 +220,16 @@ describe("Importplan mit echten Listenmustern", () => {
     expect(p.candidates.find((c) => c.notes?.includes("Kein Name (Aichach)"))).toMatchObject({ last_name: null, name_gap: true });
   });
 
+  it("ordnet Matching mit nur Vor- oder Nachnamen eindeutig zu und mappt neue Kategorien", async () => {
+    const p = await plan();
+    const wittler = p.candidates.find((c) => c.last_name === "Wittler")!;
+    expect(p.presentations.some((x) => x.candidateKey === wittler.key && x.company === "Rosenberger-OSI")).toBe(true);
+    expect(p.issues.filter((i) => i.level === "fehler")).toEqual([]);
+    expect(p.jobs.find((j) => j.title === "Teamleiter Lager")).toMatchObject({ company: "Kirstein", source_type: "Vorschlag" });
+    expect(p.candidates.find((c) => c.last_name === "Neu")!.stage).toBe("neu");
+    expect(p.candidates.find((c) => c.last_name === "Pool")!.stage).toBe("pool");
+  });
+
   it("Master „Kandidaten“ ergänzt Profil, Selbstbewerbungen und Vorstellungen", async () => {
     const p = await plan();
     const ed = p.candidates.find((c) => c.first_name === "Ed")!;
@@ -246,16 +260,16 @@ describe("Importplan mit echten Listenmustern", () => {
 describe("Laden in die Datenbank", () => {
   it("schreibt alles, behält K-Nummern, legt Sperren an – Probelauf ändert nichts", async () => {
     const dry = await loadPlan(db, await plan(), { dryRun: true });
-    expect(dry.totals.candidates).toBe(17);
+    expect(dry.totals.candidates).toBe(19);
     expect((await db.query("select count(*)::int as n from public.candidates")).rows[0].n).toBe(0);
 
     const r = await loadPlan(db, await plan(), { dryRun: false });
     expect(r.issues).toEqual([]);
-    expect(r.totals).toMatchObject({ candidates: 17, presentations: 5, ba_profiles: 2 });
+    expect(r.totals).toMatchObject({ candidates: 19, presentations: 6, ba_profiles: 2 });
 
     const { rows } = await db.query("select k_nr, legacy_k_nrs, last_name, stage from public.candidates order by k_nr");
     expect(rows.find((x) => x.last_name === "Steinle")).toMatchObject({ k_nr: "K-2026-032", legacy_k_nrs: ["K-2026-041", "K-2026-058"] });
-    expect(rows.find((x) => x.last_name === "Anders")!.k_nr).toBe("K-2026-051"); // nach höchster vorhandener Nummer
+    expect(rows.find((x) => x.last_name === "Anders")!.k_nr).toBe("K-2026-059"); // nach höchster bekannter Nummer inkl. alter K-058
     const acts = await db.query("select distinct created_by from public.activities");
     expect(acts.rows.map((a) => a.created_by)).toEqual(["Import"]);
 
@@ -269,11 +283,17 @@ describe("Laden in die Datenbank", () => {
     expect(osbra.rows[0].n).toBe(1);
   });
 
+  it("reserviert K-Nummern, die nur in Dateinamen vorkommen (Profil_K-2026-099…)", async () => {
+    await loadPlan(db, await plan(), { dryRun: false, reserveKnrs: ["K-2026-099"] });
+    const { rows } = await db.query("select k_nr from public.candidates where last_name = 'Anders'");
+    expect(rows[0].k_nr).toBe("K-2026-100");
+  });
+
   it("zweiter Lauf erzeugt keine Dubletten", async () => {
     await loadPlan(db, await plan(), { dryRun: false });
     const second = await loadPlan(db, await plan(), { dryRun: false });
     expect(second.issues).toEqual([]);
     expect(second.stats.candidates.inserted ?? 0).toBe(0);
-    expect(second.totals).toMatchObject({ candidates: 17, presentations: 5, ba_profiles: 2 });
+    expect(second.totals).toMatchObject({ candidates: 19, presentations: 6, ba_profiles: 2 });
   });
 });

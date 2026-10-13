@@ -8,7 +8,11 @@ export type LoadStats = Record<string, { inserted: number; updated: number; skip
 
 const stat = (s: LoadStats, k: string) => (s[k] ??= { inserted: 0, updated: 0, skipped: 0 });
 
-export async function loadPlan(db: pg.Client, plan: ImportPlan, opts: { dryRun: boolean }) {
+/**
+ * opts.reserveKnrs: K-Nummern, die schon außerhalb der Listen vergeben sind (z. B. Profil_K-2026-067_HueHYRE.pdf).
+ * Automatisch vergebene Nummern beginnen erst danach.
+ */
+export async function loadPlan(db: pg.Client, plan: ImportPlan, opts: { dryRun: boolean; reserveKnrs?: string[] }) {
   const stats: LoadStats = {};
   const issues: Issue[] = [];
   const fail = (source: string, message: string) => issues.push({ level: "fehler", source, message });
@@ -74,6 +78,17 @@ export async function loadPlan(db: pg.Client, plan: ImportPlan, opts: { dryRun: 
   // ------------------------------------------------ Kandidaten (erst mit K-Nr., dann ohne → automatische Nummer)
   const candidateId = new Map<string, string>();
   const ordered = [...plan.candidates].sort((a, b) => Number(!a.k_nr) - Number(!b.k_nr));
+  // Alle bekannten Nummern (Hauptnummern, alte Doppelnummern, Dateinamen) reservieren, bevor neue vergeben werden.
+  const known = [...plan.candidates.flatMap((c) => [c.k_nr, ...c.legacy_k_nrs]), ...(opts.reserveKnrs ?? [])].filter(Boolean) as string[];
+  const maxByYear = new Map<number, number>();
+  for (const k of known) {
+    const [, y, n] = k.split("-");
+    maxByYear.set(Number(y), Math.max(maxByYear.get(Number(y)) ?? 0, Number(n)));
+  }
+  for (const [y, n] of maxByYear) {
+    await db.query(`insert into public.k_nr_counters as c (year, last_no) values ($1, $2)
+      on conflict (year) do update set last_no = greatest(c.last_no, excluded.last_no)`, [y, n]);
+  }
   for (const c of ordered) {
     const label = `${c.k_nr ?? "neu"} ${[c.first_name, c.last_name].filter(Boolean).join(" ")} (${c.origin[0]})`;
     await safe(label, async () => {

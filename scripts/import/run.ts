@@ -84,6 +84,22 @@ function report(file: string, data: {
   fs.writeFileSync(file, lines.join("\n") + "\n");
 }
 
+function listFiles(dir: string): string[] {
+  const files: string[] = [];
+  const walk = (d: string) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) =>
+    e.isDirectory() ? walk(path.join(d, e.name)) : /\.(pdf|docx?|png|jpe?g)$/i.test(e.name) && files.push(path.join(d, e.name)));
+  walk(dir);
+  return files;
+}
+
+const knrInName = (f: string) =>
+  normalizeKnr(path.basename(f).match(/K[\s_-]*(\d{4}[\s_-]+)?\d{1,4}/i)?.[0].replace(/[\s_]/g, "-") ?? null);
+
+/** K-Nummern aus Dateinamen (z. B. Profil_K-2026-67_HueHYRE.pdf) – werden beim Import reserviert. */
+function knrsInFiles(dir: string): string[] {
+  return listFiles(dir).map(knrInName).filter(Boolean) as string[];
+}
+
 async function uploadCvs(dir: string, db: pg.Client) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -93,14 +109,11 @@ async function uploadCvs(dir: string, db: pg.Client) {
     "select id, k_nr, legacy_k_nrs, cv_file from public.candidates");
   const byKnr = new Map<string, (typeof rows)[number]>();
   for (const r of rows) for (const k of [r.k_nr, ...r.legacy_k_nrs]) byKnr.set(k, r);
-  const files: string[] = [];
-  const walk = (d: string) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) =>
-    e.isDirectory() ? walk(path.join(d, e.name)) : /\.(pdf|docx?|png|jpe?g)$/i.test(e.name) && files.push(path.join(d, e.name)));
-  walk(dir);
+  const files = listFiles(dir);
   let uploaded = 0;
   const unmatched: string[] = [];
   for (const f of files) {
-    const k = normalizeKnr(path.basename(f).match(/K[\s_-]*(\d{4}[\s_-]+)?\d{1,4}/i)?.[0].replace(/[\s_]/g, "-") ?? null);
+    const k = knrInName(f);
     const cand = k ? byKnr.get(k) : undefined;
     if (!cand) { unmatched.push(path.relative(dir, f)); continue; }
     const name = path.basename(f).replace(/[^\w.\-äöüÄÖÜß ]+/g, "_");
@@ -143,7 +156,7 @@ async function main() {
   await db.connect();
   try {
     const plan = buildPlan({ gesamtliste, master, leads });
-    const result = await loadPlan(db, plan, { dryRun: o.dryRun });
+    const result = await loadPlan(db, plan, { dryRun: o.dryRun, reserveKnrs: o.cvDir ? knrsInFiles(o.cvDir) : [] });
     const cv = o.cvDir && !o.dryRun ? await uploadCvs(o.cvDir, db) : undefined;
     const file = o.report ?? `import-report-${new Date().toISOString().slice(0, 10)}${o.dryRun ? "-probelauf" : ""}.md`;
     report(file, {

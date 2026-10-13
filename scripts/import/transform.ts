@@ -290,6 +290,9 @@ function mapPriority(v: string | null): string | null {
 export function mapStage(kategorie: string | null, status: string | null): { stage: string; blocked: boolean; maron: boolean; known: boolean } {
   const k = norm(kategorie ?? "");
   const s = norm(status ?? "");
+  // „Neu“, „Neu – Umzug klären“, „Aktiv – neu“ (heute beworben, noch ohne Einwilligung) → 1 Neu.
+  if (k.startsWith("neu") || (k.startsWith("aktiv") && /\bneu\b/.test(k))) return { stage: "neu", blocked: false, maron: false, known: true };
+  if (k.startsWith("pool")) return { stage: "pool", blocked: false, maron: false, known: true };
   if (k.startsWith("aktiv")) {
     if (/interview|vorstellungsgespraech|termin/.test(s)) return { stage: "interview", blocked: false, maron: false, known: true };
     if (/angebot|vertrag/.test(s)) return { stage: "angebot", blocked: false, maron: false, known: true };
@@ -409,6 +412,8 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
     if (!k) return;
     const existing = companies.get(k);
     if (!existing) return void companies.set(k, { ...c });
+    // Angezeigter Name: „Kirstein“ statt „Kirstein (Kunde)“.
+    if (/\(/.test(existing.name) && !/\(/.test(c.name)) existing.name = c.name;
     for (const [f, v] of Object.entries(c)) {
       const key = f as keyof CompanyIn;
       if (v != null && (existing[key] == null || existing[key] === "")) (existing as Record<string, unknown>)[key] = v;
@@ -786,6 +791,16 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
     }
   }
 
+  // Nur Vor- oder Nachname („Gözde“, „Mühlhause“): nur bei eindeutigem Treffer.
+  const looseCandidate = (raw: string | null): CandidateIn | undefined => {
+    const n = norm(raw ?? "");
+    if (!n || n.includes(" ")) return undefined;
+    const byLast = plan.candidates.filter((x) => norm(x.last_name ?? "") === n);
+    if (byLast.length === 1) return byLast[0];
+    const byFirst = plan.candidates.filter((x) => norm(x.first_name ?? "").split(" ")[0] === n);
+    return byLast.length === 0 && byFirst.length === 1 ? byFirst[0] : undefined;
+  };
+
   // --- Master: Matching (mit Datum = Vorstellung, ohne = Stellen-Vorschlag)
   const matchSheet = input.master && findSheet(input.master, "Matching", "Matches");
   if (matchSheet) {
@@ -798,7 +813,7 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
       const company = str(get(r, c.company));
       if (!company) { issue("warnung", src, "Firma fehlt – übersprungen."); continue; }
       const knr = normalizeKnr(get(r, c.k_nr), year);
-      const byName = candidateByName.get(norm(str(get(r, c.name)) ?? ""));
+      const byName = candidateByName.get(norm(str(get(r, c.name)) ?? "")) ?? looseCandidate(str(get(r, c.name)));
       const byNr = knr ? byKnr.get(knr) : undefined;
       // Passt der Name nicht zur Nummer (Doppelvergabe), gewinnt der Name.
       const cand = (byNr && (!byName || byName === byNr) ? byNr : byName ?? byNr) ?? null;
@@ -810,7 +825,8 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
         if (title) addJob({ company, title });
         plan.presentations.push({ candidateKey: cand.key, company, jobTitle: title, sent_date: date, notes: str(get(r, c.notes)), origin: src });
       } else if (title) {
-        addJob({ company, title, source_type: "Vorschlag", notes: cand ? `Match-Vorschlag: ${cand.k_nr ?? ""} ${cand.first_name ?? ""} ${cand.last_name ?? ""}`.trim() : str(get(r, c.notes)) });
+        const who = cand ? `${cand.k_nr ?? ""} ${cand.first_name ?? ""} ${cand.last_name ?? ""}`.replace(/\s+/g, " ").trim() : str(get(r, c.name));
+        addJob({ company, title, source_type: "Vorschlag", notes: [who && `Match-Vorschlag: ${who}`, str(get(r, c.notes))].filter(Boolean).join(" – ") || null });
       } else {
         issue("info", src, `Match ohne Stelle und ohne Datum (${company}) – nur Firma übernommen.`);
       }
