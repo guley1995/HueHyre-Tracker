@@ -122,6 +122,30 @@ export function cleanEmail(v: string | null): string | null {
 const COMPANY_RE = /\b(gmbh|ag|kg|se|e v|group|gruppe|holding|packaging|werke?|stadtwerke)\b/;
 export const looksLikeCompany = (name: string) => COMPANY_RE.test(norm(name));
 
+/**
+ * Namensspalte mit Zusätzen: „Tahsin E. (Nachname nachtragen)“, „Gräf (evtl. K-2026-12) – Maron-Pool“,
+ * „K-2026-03 (Klarname fehlt)“, „Kein Name (Aichach)“, „Samet Koc (Mechatroniker Üstra) – Maron-Pool“.
+ * Zusätze kommen in die Notiz, „evtl. K-…“ wird nicht zugeordnet, ein einzelnes Wort ist ein Nachname.
+ */
+export function cleanPersonName(raw: string | null): { first: string | null; last: string | null; gap: boolean; note: string | null } {
+  if (!raw) return { first: null, last: null, gap: false, note: null };
+  const extras: string[] = [];
+  let base = raw.replace(/\(([^)]*)\)/g, (_, inner: string) => { extras.push(inner.trim()); return " "; });
+  const dash = base.split(/\s+[–—-]\s+/);
+  base = dash[0];
+  extras.push(...dash.slice(1).map((s) => s.trim()).filter(Boolean));
+  base = base.replace(/\s+/g, " ").trim();
+  const hint = /klarname|nachname|name unbekannt|ungeklaert|nachtragen|kein name/;
+  let gap = extras.some((e) => hint.test(norm(e))) || hint.test(norm(base));
+  if (/^K\s*-?\s*\d/i.test(base) || /^kein name$/i.test(base)) base = "";
+  const note = extras.length || base !== raw.trim() ? `Name laut Liste: ${raw.trim()}` : null;
+  if (!base) return { first: null, last: null, gap: true, note };
+  if (!base.includes(" ") && !base.includes(",")) return { first: null, last: base, gap: true, note };
+  const { first, last } = splitName(base);
+  gap = gap || nameGap(first, last);
+  return { first, last, gap, note };
+}
+
 /** Vergleichsschlüssel für Firmen: ohne Rechtsform, „Group“, Klammerzusatz (Ort). */
 export function companyKey(name: string): string {
   return norm(name.replace(/\([^)]*\)/g, " "))
@@ -462,18 +486,21 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
       const src = `Alle Bewerber Z.${r.__row}`;
       let first = str(get(r, c.first_name));
       let last = str(get(r, c.last_name));
-      if (!first && !last) ({ first, last } = splitName(str(get(r, c.name))));
+      const rawName = str(get(r, c.name));
+      const cleaned = first || last ? { first, last, gap: nameGap(first, last), note: null } : cleanPersonName(rawName);
+      ({ first, last } = cleaned);
       const emailRaw = str(get(r, c.email));
       const email = cleanEmail(emailRaw);
       const phone = str(get(r, c.phone));
-      if (!first && !last && !email && !phone) {
+      const own = normalizeKnr(get(r, c.k_nr), year);
+      if (!first && !last && !email && !phone && !own && !str(get(r, c.profile_title))) {
         issue("warnung", src, "Leere Zeile ohne Name/Kontakt übersprungen.");
         continue;
       }
       const kat = str(get(r, c.kategorie));
       const st = mapStage(kat, str(get(r, c.status)));
       if (!st.known) issue("warnung", src, `Kategorie „${kat ?? ""}“ unbekannt – als „neu“ importiert.`);
-      const fullName = [first, last].filter(Boolean).join(" ");
+      const fullName = rawName ?? [first, last].filter(Boolean).join(" ");
       const special = str(get(r, c.notes));
 
       // Gesperrte „Person“, die eine Firma ist → Tabu-Firma statt Kandidat.
@@ -485,7 +512,6 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
 
       // K-Nummer: aus der Zeile, sonst aus dem K-Nummern-Blatt per Name.
       const knrs = new Set<string>();
-      const own = normalizeKnr(get(r, c.k_nr), year);
       if (own) knrs.add(own);
       for (const k of knrByName.get(personKey(first, last)) ?? []) knrs.add(k);
       const sorted = [...knrs].sort((a, b) => knrNumber(a) - knrNumber(b));
@@ -493,6 +519,7 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
       const consentRaw = get(r, c.consent);
       const consentDate = parseDate(consentRaw, opts);
       const notes: string[] = [];
+      if (cleaned.note) notes.push(cleaned.note);
       if (special) notes.push(special);
       if (emailRaw && !email) notes.push(`Kontakt laut Liste: ${emailRaw}`);
       if (!consentDate && str(consentRaw)) notes.push(`Einwilligung laut Liste: ${str(consentRaw)} (ohne Datum)`);
@@ -503,7 +530,7 @@ export function buildPlan(input: { gesamtliste?: Sheet[]; master?: Sheet[]; lead
       const indeed = get(r, c.indeed_contacted);
       if (str(indeed)) notes.push(`Indeed angeschrieben am: ${parseDate(indeed, opts) ?? str(indeed)}`);
       const scope = st.blocked ? parseBlockScope([special, status].filter(Boolean).join(" | ")) : { all: true, companies: [] };
-      const gap = nameGap(first, last);
+      const gap = cleaned.gap;
       if (gap) {
         notes.unshift("[Klarname fehlt – beim Import nicht geraten, bitte ergänzen]");
         issue("warnung", src, `Klarname unvollständig: „${[first, last].filter(Boolean).join(" ") || "?"}“${sorted[0] ? ` (${sorted[0]})` : ""} – markiert.`);

@@ -44,6 +44,9 @@ beforeAll(async () => {
       ["", "Ed Schwab", "ed@x.de", "", "", "", "", "", "Aktiv", "", "", "", "Vorgestellt: Craiss, Sirl (07.10.2026); GROB?, AIB (Absage) | Selbst beworben: DAHER (Absage 09.10.), Aracom u. a.", ""],
       ["", "Tom Schwab", "tom@x.de", "", "", "", "", "", "Absage", "", "", "", "", ""],
       ["", "Uta Tkocz", "uta@x.de", "", "", "", "", "", "Maron", "", "", "", "", ""],
+      ["K-2026-38", "K-2026-38 (Klarname offen)", "", "", "", "", "Elektriker", "", "Vermarktet", "", "", "", "", ""],
+      ["", "Kein Name (Aichach)", "", "", "", "", "Lagerist", "", "Nur gescreent", "", "Indeed", "", "", ""],
+      ["", "Gieselmann (Kfz) – Maron-Pool", "", "", "", "", "Kfz", "", "Maron-Pool (Partner)", "", "", "", "", ""],
     ],
     "K-Nummern": [
       ["K-Nr", "Name"],
@@ -204,6 +207,15 @@ describe("Importplan mit echten Listenmustern", () => {
     expect(p.candidates.filter((c) => c.last_name === "Steinle")).toHaveLength(1);
   });
 
+  it("bereinigt Namen mit Zusätzen und markiert Klarnamen-Lücken statt zu raten", async () => {
+    const p = await plan();
+    const k38 = p.candidates.find((c) => c.k_nr === "K-2026-038")!;
+    expect(k38).toMatchObject({ first_name: null, last_name: null, name_gap: true });
+    expect(k38.notes).toContain("Name laut Liste: K-2026-38 (Klarname offen)");
+    expect(p.candidates.find((c) => c.last_name === "Gieselmann")).toMatchObject({ first_name: null, name_gap: true, stage: "pool" });
+    expect(p.candidates.find((c) => c.notes?.includes("Kein Name (Aichach)"))).toMatchObject({ last_name: null, name_gap: true });
+  });
+
   it("Master „Kandidaten“ ergänzt Profil, Selbstbewerbungen und Vorstellungen", async () => {
     const p = await plan();
     const ed = p.candidates.find((c) => c.first_name === "Ed")!;
@@ -234,12 +246,12 @@ describe("Importplan mit echten Listenmustern", () => {
 describe("Laden in die Datenbank", () => {
   it("schreibt alles, behält K-Nummern, legt Sperren an – Probelauf ändert nichts", async () => {
     const dry = await loadPlan(db, await plan(), { dryRun: true });
-    expect(dry.totals.candidates).toBe(14);
+    expect(dry.totals.candidates).toBe(17);
     expect((await db.query("select count(*)::int as n from public.candidates")).rows[0].n).toBe(0);
 
     const r = await loadPlan(db, await plan(), { dryRun: false });
     expect(r.issues).toEqual([]);
-    expect(r.totals).toMatchObject({ candidates: 14, presentations: 5, ba_profiles: 2 });
+    expect(r.totals).toMatchObject({ candidates: 17, presentations: 5, ba_profiles: 2 });
 
     const { rows } = await db.query("select k_nr, legacy_k_nrs, last_name, stage from public.candidates order by k_nr");
     expect(rows.find((x) => x.last_name === "Steinle")).toMatchObject({ k_nr: "K-2026-032", legacy_k_nrs: ["K-2026-041", "K-2026-058"] });
@@ -262,6 +274,6 @@ describe("Laden in die Datenbank", () => {
     const second = await loadPlan(db, await plan(), { dryRun: false });
     expect(second.issues).toEqual([]);
     expect(second.stats.candidates.inserted ?? 0).toBe(0);
-    expect(second.totals).toMatchObject({ candidates: 14, presentations: 5, ba_profiles: 2 });
+    expect(second.totals).toMatchObject({ candidates: 17, presentations: 5, ba_profiles: 2 });
   });
 });
