@@ -82,7 +82,15 @@ export async function loadPlan(db: pg.Client, plan: ImportPlan, opts: { dryRun: 
         [c.email, c.phone, c.first_name, c.last_name, c.plz, c.city, !c.name_gap]);
       const byKnr = c.k_nr ? await db.query<{ id: string; k_nr: string }>(
         "select id, k_nr from public.candidates where k_nr = $1 or $1 = any(legacy_k_nrs)", [c.k_nr]) : { rows: [] };
-      const hit = byKnr.rows[0] ?? dup.rows[0];
+      // Nur ein Name bekannt (z. B. „nur über Indeed-Chat erreichbar“): beim zweiten Lauf über den Namen wiederfinden,
+      // aber nur Einträge, die ebenfalls weder E-Mail, Telefon noch Ort haben.
+      const bare = !c.k_nr && !c.email && !c.phone && !c.plz && !c.city && c.last_name && !c.name_gap
+        ? await db.query<{ id: string; k_nr: string }>(
+          `select id, k_nr from public.candidates where public.normalize_name(last_name) = public.normalize_name($1)
+             and public.normalize_name(first_name) is not distinct from public.normalize_name($2)
+             and email is null and phone is null and plz is null and city is null`, [c.last_name, c.first_name])
+        : { rows: [] };
+      const hit = byKnr.rows[0] ?? dup.rows[0] ?? bare.rows[0];
       if (hit) {
         // Schon in der Datenbank (z. B. zweiter Importlauf): nur leere Felder ergänzen.
         await db.query(
